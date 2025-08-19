@@ -1,8 +1,15 @@
 package com.app.pakeplus
 
+import android.Manifest
 import android.annotation.SuppressLint
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.Settings
+import android.content.Intent
+import android.net.Uri
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.webkit.WebChromeClient
@@ -10,6 +17,11 @@ import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import android.webkit.JavascriptInterface
+import android.widget.Toast
+import java.io.File
 import androidx.activity.enableEdgeToEdge
 // import android.view.Menu
 // import android.view.WindowInsets
@@ -34,6 +46,11 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
     private lateinit var gestureDetector: GestureDetectorCompat
+    
+    companion object {
+        private const val REQUEST_STORAGE_PERMISSION = 100
+        private const val REQUEST_MANAGE_EXTERNAL_STORAGE = 101
+    }
 
     @SuppressLint("SetJavaScriptEnabled", "ClickableViewAccessibility")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -53,10 +70,15 @@ class MainActivity : AppCompatActivity() {
         webView = findViewById<WebView>(R.id.webview)
 
         webView.settings.apply {
-            javaScriptEnabled = true       // 启用JS
-            domStorageEnabled = true       // 启用DOM存储（Vue 需要）
-            allowFileAccess = true         // 允许文件访问
+            javaScriptEnabled = true                 // 启用JS
+            domStorageEnabled = true                 // 启用DOM存储（Vue 需要）
+            allowFileAccess = true                   // 允许文件访问
+            allowContentAccess = true                // 允许内容访问
+            allowUniversalAccessFromFileURLs = true  // 允许从文件URL访问所有资源
+            allowFileAccessFromFileURLs = true       // 允许文件URL之间的访问
             setSupportMultipleWindows(true)
+            databaseEnabled = true                   // 启用数据库
+            cacheMode = WebView.LOAD_DEFAULT        // 设置缓存模式
         }
 
         // webView.settings.userAgentString = ""
@@ -72,6 +94,9 @@ class MainActivity : AppCompatActivity() {
 
         // get web load progress
         webView.webChromeClient = MyChromeClient()
+        
+        // 添加JavaScript接口
+        webView.addJavascriptInterface(FileAccessInterface(), "AndroidFileAccess")
 
         // Setup gesture detector
         gestureDetector =
@@ -115,6 +140,9 @@ class MainActivity : AppCompatActivity() {
             false
         }
 
+        // 请求文件访问权限
+        requestStoragePermissions()
+        
         // webView.loadUrl("https://juejin.cn/")
         webView.loadUrl("file:///android_asset/index.html")
 
@@ -211,6 +239,128 @@ class MainActivity : AppCompatActivity() {
             super.onProgressChanged(view, newProgress)
             val url = view?.url
             println("wev view url:$url")
+        }
+    }
+    
+    // 请求存储权限
+    private fun requestStoragePermissions() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // Android 11 及以上版本
+            if (!Environment.isExternalStorageManager()) {
+                val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                val uri = Uri.fromParts("package", packageName, null)
+                intent.data = uri
+                startActivityForResult(intent, REQUEST_MANAGE_EXTERNAL_STORAGE)
+            }
+        } else {
+            // Android 10 及以下版本
+            val permissions = arrayOf(
+                Manifest.permission.READ_EXTERNAL_STORAGE,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE
+            )
+            
+            val permissionsToRequest = permissions.filter { permission ->
+                ContextCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED
+            }
+            
+            if (permissionsToRequest.isNotEmpty()) {
+                ActivityCompat.requestPermissions(
+                    this,
+                    permissionsToRequest.toTypedArray(),
+                    REQUEST_STORAGE_PERMISSION
+                )
+            }
+        }
+    }
+    
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        when (requestCode) {
+            REQUEST_STORAGE_PERMISSION -> {
+                val allGranted = grantResults.all { it == PackageManager.PERMISSION_GRANTED }
+                if (allGranted) {
+                    println("存储权限已授予")
+                } else {
+                    println("存储权限被拒绝")
+                }
+            }
+        }
+    }
+    
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        when (requestCode) {
+            REQUEST_MANAGE_EXTERNAL_STORAGE -> {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    if (Environment.isExternalStorageManager()) {
+                        println("已获得管理所有文件的权限")
+                    } else {
+                        println("未获得管理所有文件的权限")
+                    }
+                }
+            }
+        }
+    }
+    
+    // JavaScript接口类，用于文件访问
+    inner class FileAccessInterface {
+        @JavascriptInterface
+        fun getExternalStoragePath(): String {
+            return Environment.getExternalStorageDirectory().absolutePath
+        }
+        
+        @JavascriptInterface
+        fun getAppFilesPath(): String {
+            return filesDir.absolutePath
+        }
+        
+        @JavascriptInterface
+        fun getAppExternalFilesPath(): String {
+            return getExternalFilesDir(null)?.absolutePath ?: ""
+        }
+        
+        @JavascriptInterface
+        fun fileExists(path: String): Boolean {
+            return try {
+                File(path).exists()
+            } catch (e: Exception) {
+                false
+            }
+        }
+        
+        @JavascriptInterface
+        fun readFile(path: String): String {
+            return try {
+                File(path).readText()
+            } catch (e: Exception) {
+                "Error reading file: ${e.message}"
+            }
+        }
+        
+        @JavascriptInterface
+        fun listFiles(path: String): String {
+            return try {
+                val dir = File(path)
+                if (dir.exists() && dir.isDirectory) {
+                    dir.listFiles()?.joinToString(",") { it.name } ?: "Directory is empty"
+                } else {
+                    "Path does not exist or is not a directory"
+                }
+            } catch (e: Exception) {
+                "Error listing files: ${e.message}"
+            }
+        }
+        
+        @JavascriptInterface
+        fun showToast(message: String) {
+            runOnUiThread {
+                Toast.makeText(this@MainActivity, message, Toast.LENGTH_SHORT).show()
+            }
         }
     }
 }
